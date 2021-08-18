@@ -1,48 +1,17 @@
 package main
 
 import (
-	"context"
+	"net/http"
 
-	"github.com/goccy/go-json"
-	"github.com/osamingo/jsonrpc/v2"
+	"github.com/labstack/echo/v4"
 )
 
-type (
-	EchoHandler struct{}
-	EchoParams  struct {
-		Name string `json:"name"`
-	}
-	EchoResult struct {
-		Message string `json:"message"`
-	}
+func main() {
 
-	PositionalHandler struct{}
-	PositionalParams  []int
-	PositionalResult  struct {
-		Message []int `json:"message"`
-	}
-)
-
-func (h EchoHandler) ServeJSONRPC(c context.Context, params *json.RawMessage) (interface{}, *jsonrpc.Error) {
-
-	var p EchoParams
-	if err := jsonrpc.Unmarshal(params, &p); err != nil {
-		return nil, err
-	}
-
-	return EchoResult{
-		Message: "Hello, " + p.Name,
-	}, nil
-}
-
-func (h PositionalHandler) ServeJSONRPC(c context.Context, params *json.RawMessage) (interface{}, **jsonrpc.Error) {
-
-	var p PositionalParams
-	if err := jsonrpc.Unmarshal(params, &p); err != nil {
-		return nil, nil
-	}
-
-	return PositionalResult{
-		Message: p,
-	}, nil
+	// TODO: json-rpc https://github.com/mrFokin/jrpc/blob/master/jrpc_test.go
+	e := echo.New()
+	e.GET("/", func(c echo.Context) error {
+		return c.String(http.StatusOK, "Hello, World!")
+	})
+	e.Logger.Fatal(e.Start(":1323"))
 }
