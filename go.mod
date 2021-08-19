@@ -7,6 +7,7 @@ require (
 	github.com/goccy/go-json v0.7.4
 	github.com/gorilla/mux v1.8.0
 	github.com/iancoleman/orderedmap v0.2.0 // indirect
+	github.com/ipld/go-ipld-prime v0.11.0
 	github.com/labstack/echo/v4 v4.5.0
 	github.com/mattn/go-isatty v0.0.13 // indirect
 	github.com/osamingo/jsonrpc/v2 v2.4.0
