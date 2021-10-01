@@ -2,21 +2,21 @@ package main
 
 import (
 	"context"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"log"
 	"time"
+
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 
 	graphsync "github.com/ipfs/go-graphsync/impl"
 	gsnet "github.com/ipfs/go-graphsync/network"
 	"github.com/ipfs/go-graphsync/storeutil"
 	"github.com/libp2p/go-libp2p"
 	connmgr "github.com/libp2p/go-libp2p-connmgr"
-	"github.com/libp2p/go-libp2p-core/crypto"
+	crypto "github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/routing"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
+	kaddht "github.com/libp2p/go-libp2p-kad-dht"
 	noise "github.com/libp2p/go-libp2p-noise"
-	libp2ptls "github.com/libp2p/go-libp2p-tls"
 )
 
 // example of libp2p host - https://github.com/libp2p/go-libp2p/tree/master/examples/libp2p-host
@@ -51,23 +51,29 @@ func run() {
 		panic(err)
 	}
 
-	var idht *dht.IpfsDHT
+	// transports := libp2p.ChainOptions(
+	// 	// libp2p.Transport(tcp.NewTCPTransport),
+	// 	libp2p.Transport(ws.New),
+	// )
+	var dht *kaddht.IpfsDHT
+	newDHT := func(h host.Host) (routing.PeerRouting, error) {
+		var err error
+		dht, err = kaddht.New(ctx, h)
+		return dht, err
+	}
+	//	security := libp2p.Security(tls.ID, tls.New)
 
 	h2, err := libp2p.New(
 		ctx,
 		// Use the keypair we generated
 		libp2p.Identity(priv),
+		libp2p.DefaultSecurity, libp2p.Security(noise.ID, noise.New),
 		// Multiple listen addresses
 		libp2p.ListenAddrStrings(
 			"/ip4/0.0.0.0/tcp/9000",      // regular tcp connections
 			"/ip4/0.0.0.0/udp/9000/quic", // a UDP endpoint for the QUIC transport
 		),
 		// support TLS connections
-		libp2p.Security(libp2ptls.ID, libp2ptls.New),
-		// support noise connections
-		libp2p.Security(noise.ID, noise.New),
-		// support any other default transports (TCP)
-		libp2p.DefaultTransports,
 		// Let's prevent our peer from having too many
 		// connections by attaching a connection manager.
 		libp2p.ConnectionManager(connmgr.NewConnManager(
@@ -78,10 +84,7 @@ func run() {
 		// Attempt to open ports using uPNP for NATed hosts.
 		libp2p.NATPortMap(),
 		// Let this host use the DHT to find other hosts
-		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
-			idht, err = dht.New(ctx, h)
-			return idht, err
-		}),
+		libp2p.Routing(newDHT),
 		// Let this host use relays and advertise itself on relays if
 		// it finds it is behind NAT. Use libp2p.Relay(options...) to
 		// enable active relays and more.
