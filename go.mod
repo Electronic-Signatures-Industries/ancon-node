@@ -15,9 +15,9 @@ require (
 	github.com/libp2p/go-libp2p-core v0.8.6
 	github.com/libp2p/go-libp2p-kad-dht v0.13.1
 	github.com/libp2p/go-libp2p-noise v0.2.0
-	github.com/libp2p/go-libp2p-tls v0.1.3
-	github.com/libp2p/go-ws-transport v0.4.0
 	github.com/osamingo/jsonrpc/v2 v2.4.0
+	github.com/tendermint/tendermint v0.34.13
+	github.com/tendermint/tm-db v0.6.5
 )
 
 replace github.com/libp2p/go-libp2p => github.com/libp2p/go-libp2p v0.14.1

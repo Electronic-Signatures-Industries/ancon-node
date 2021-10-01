@@ -2,10 +2,23 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
+
+	"os"
 	"time"
 
+	"github.com/tendermint/tendermint/libs/log"
+	httpprovider "github.com/tendermint/tendermint/light/provider/http"
+	dbm "github.com/tendermint/tm-db"
+	badger "github.com/tendermint/tm-db/badgerdb"
+
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
+	"github.com/tendermint/tendermint/light/provider"
+	dbs "github.com/tendermint/tendermint/light/store/db"
+
+	"github.com/tendermint/tendermint/light"
+	"github.com/tendermint/tendermint/light/proxy"
+	"github.com/tendermint/tendermint/rpc/jsonrpc/server"
 
 	graphsync "github.com/ipfs/go-graphsync/impl"
 	gsnet "github.com/ipfs/go-graphsync/network"
@@ -38,10 +51,6 @@ func run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Now, normally you do not just want a simple host, you want
-	// that is fully configured to best support your p2p application.
-	// Let's create a second host setting some more options.
-
 	// Set your own keypair
 	priv, _, err := crypto.GenerateKeyPair(
 		crypto.Ed25519, // Select your key type. Ed25519 are nice short
@@ -51,23 +60,18 @@ func run() {
 		panic(err)
 	}
 
-	// transports := libp2p.ChainOptions(
-	// 	// libp2p.Transport(tcp.NewTCPTransport),
-	// 	libp2p.Transport(ws.New),
-	// )
 	var dht *kaddht.IpfsDHT
 	newDHT := func(h host.Host) (routing.PeerRouting, error) {
 		var err error
 		dht, err = kaddht.New(ctx, h)
 		return dht, err
 	}
-	//	security := libp2p.Security(tls.ID, tls.New)
 
-	h2, err := libp2p.New(
+	gsynchost, err := libp2p.New(
 		ctx,
 		// Use the keypair we generated
 		libp2p.Identity(priv),
-		libp2p.DefaultSecurity, libp2p.Security(noise.ID, noise.New),
+		libp2p.Security(noise.ID, noise.New),
 		// Multiple listen addresses
 		libp2p.ListenAddrStrings(
 			"/ip4/0.0.0.0/tcp/9000",      // regular tcp connections
@@ -100,7 +104,7 @@ func run() {
 	if err != nil {
 		panic(err)
 	}
-	defer h2.Close()
+	defer gsynchost.Close()
 
 	// The last step to get fully up and running would be to connect to
 	// bootstrap peers (or any other peers). We leave this commented as
@@ -113,15 +117,60 @@ func run() {
 			pi, _ := peer.AddrInfoFromP2pAddr(addr)
 			// We ignore errors as some bootstrap peers may be down
 			// and that is fine.
-			h2.Connect(ctx, *pi)
+			gsynchost.Connect(ctx, *pi)
 		}
 	*/
-	log.Printf("Hello World, my second hosts ID is %s\n", h2.ID())
+	fmt.Printf("Hello World, my hosts ID is %s\n", gsynchost.ID())
 
 	var bs blockstore.Blockstore
 
-	network := gsnet.NewFromLibp2pHost(h2)
+	network := gsnet.NewFromLibp2pHost(gsynchost)
 	lsys := storeutil.LinkSystemForBlockstore(bs)
-
+	// add carv1
 	_ = graphsync.New(ctx, network, lsys)
+
+	db, err := badger.NewDB("anconnode", "/tmp/badger")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open badger db: %v", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	h := 4
+	hash := []byte("FFABCB1821479586177683DA92044DEA9E51232DAEC3AAA54D244E5B00F28B43")
+
+	node, err := newLightTendermint(ctx, "placehere", "http://localhost:26657", "http://localhost:26657", h, hash, dbm.DB(db))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v", err)
+		os.Exit(2)
+	}
+
+	// rpc
+	c := server.DefaultConfig()
+	proxy, err := proxy.NewProxy(node, "http://localhost:8899", "http://localhost:26657", c, log.NewNopLogger())
+	proxy.ListenAndServe()
+
+}
+
+func newLightTendermint(ctx context.Context, chainID string,
+	primary string, witness string, height int, hash []byte, db dbm.DB) (*light.Client, error) {
+
+	primaryNode, _ := httpprovider.New(chainID, primary)
+	witnessNode, _ := httpprovider.New(chainID, witness)
+	c, _ := light.NewClient(
+		ctx,
+		chainID,
+		light.TrustOptions{
+			Period: 504 * time.Hour, // 21 days
+			Height: int64(height),
+			Hash:   hash,
+		},
+		primaryNode,
+		[]provider.Provider{witnessNode},
+		dbs.New(db, "ancon-node"),
+		light.Logger(log.TestingLogger()),
+	)
+	//_, err := c.Update(ctx, time.Now())
+
+	return c, nil
 }
