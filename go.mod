@@ -5,6 +5,7 @@ go 1.16
 require (
 	github.com/alecthomas/jsonschema v0.0.0-20210526225647-edb03dcab7bc // indirect
 	github.com/apex/log v1.9.0
+	github.com/dgraph-io/badger v1.6.2
 	github.com/goccy/go-json v0.7.4
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/iancoleman/orderedmap v0.2.0 // indirect
@@ -18,6 +19,6 @@ require (
 	github.com/osamingo/jsonrpc/v2 v2.4.0
 	github.com/prometheus/client_golang v1.10.0 // indirect
 	github.com/tendermint/tendermint v0.34.13
-	github.com/tendermint/tm-db v0.6.5
+	github.com/tendermint/tm-db v0.6.5 // indirect
 	golang.org/x/crypto v0.0.0-20210506145944-38f3c27a63bf // indirect
 )

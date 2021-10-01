@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger"
-	"github.com/dgraph-io/badger/v2"
 
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/light"
 	"github.com/tendermint/tendermint/light/provider"
 	httpprovider "github.com/tendermint/tendermint/light/provider/http"
+	"github.com/tendermint/tendermint/light/proxy"
 	dbs "github.com/tendermint/tendermint/light/store/db"
+	"github.com/tendermint/tendermint/rpc/jsonrpc/server"
 )
 
 var configFile string
@@ -70,4 +71,8 @@ func main() {
 	}
 
 	// rpc
+	c := server.DefaultConfig()
+	proxy, err := proxy.NewProxy(node, "http://localhost:8899", "http://localhost:26657", c, log.NewNopLogger())
+	proxy.ListenAndServe()
+	server.NewWebsocketManager().
 }

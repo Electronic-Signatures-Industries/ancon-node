@@ -9,38 +9,39 @@ import (
 	"github.com/apex/log"
 	gsmsg "github.com/ipfs/go-graphsync/message"
 	"github.com/ipfs/go-graphsync/network"
-	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-msgio"
 	ma "github.com/multiformats/go-multiaddr"
+	"github.com/tendermint/tendermint/light/proxy"
+	"github.com/tendermint/tendermint/light/rpc"
 )
 
 var sendMessageTimeout = time.Minute * 10
 
-// NewFromLibp2pHost returns a GraphSyncNetwork supported by underlying Libp2p host.
-func NewFromLibp2pHost(host host.Host) GraphSyncNetwork {
-	graphSyncNetwork := libp2pGraphSyncNetwork{
+// NewFromTM returns a GraphSyncNetwork supported by underlying Libp2p host.
+func NewFromTM(host proxy.Proxy) network.GraphSyncNetwork {
+	graphSyncNetwork := tmGraphSyncNetwork{
 		host: host,
 	}
 
 	return &graphSyncNetwork
 }
 
-// libp2pGraphSyncNetwork transforms the libp2p host interface, which sends and receives
-// NetMessage objects, into the graphsync network interface.
-type libp2pGraphSyncNetwork struct {
-	host host.Host
+// tmGraphSyncNetwork transforms the libp2p host interface, which sends and receives
+// NetMessage objects, into the network.GraphSyncNetwork interface.
+type tmGraphSyncNetwork struct {
+	host proxy.Proxy
 	// inbound messages from the network are forwarded to the receiver
-	receiver Receiver
+	receiver network.Receiver
 }
 
 type streamMessageSender struct {
-	s network.Stream
+	s *rpc.Client
 }
 
 func (s *streamMessageSender) Close() error {
-	return s.s.Close()
+	return s.s.Stop()
+
 }
 
 func (s *streamMessageSender) Reset() error {
@@ -51,7 +52,7 @@ func (s *streamMessageSender) SendMsg(ctx context.Context, msg gsmsg.GraphSyncMe
 	return msgToStream(ctx, s.s, msg)
 }
 
-func msgToStream(ctx context.Context, s network.Stream, msg gsmsg.GraphSyncMessage) error {
+func msgToStream(ctx context.Context, s *rpc.Client, msg gsmsg.GraphSyncMessage) error {
 	log.Debugf("Outgoing message with %d requests, %d responses, and %d blocks",
 		len(msg.Requests()), len(msg.Responses()), len(msg.Blocks()))
 
@@ -64,7 +65,7 @@ func msgToStream(ctx context.Context, s network.Stream, msg gsmsg.GraphSyncMessa
 	}
 
 	switch s.Protocol() {
-	case ProtocolGraphsync:
+	case network.ProtocolGraphsync:
 		if err := msg.ToNet(s); err != nil {
 			log.Debugf("error: %s", err)
 			return err
@@ -79,7 +80,7 @@ func msgToStream(ctx context.Context, s network.Stream, msg gsmsg.GraphSyncMessa
 	return nil
 }
 
-func (gsnet *libp2pGraphSyncNetwork) NewMessageSender(ctx context.Context, p peer.ID) (MessageSender, error) {
+func (gsnet *tmGraphSyncNetwork) NewMessageSender(ctx context.Context, p peer.ID) (network.MessageSender, error) {
 	s, err := gsnet.newStreamToPeer(ctx, p)
 	if err != nil {
 		return nil, err
@@ -88,11 +89,11 @@ func (gsnet *libp2pGraphSyncNetwork) NewMessageSender(ctx context.Context, p pee
 	return &streamMessageSender{s: s}, nil
 }
 
-func (gsnet *libp2pGraphSyncNetwork) newStreamToPeer(ctx context.Context, p peer.ID) (network.Stream, error) {
+func (gsnet *tmGraphSyncNetwork) newStreamToPeer(ctx context.Context, p peer.ID) (*rpc.Client, error) {
 	return gsnet.host.NewStream(ctx, p, ProtocolGraphsync)
 }
 
-func (gsnet *libp2pGraphSyncNetwork) SendMessage(
+func (gsnet *tmGraphSyncNetwork) SendMessage(
 	ctx context.Context,
 	p peer.ID,
 	outgoing gsmsg.GraphSyncMessage) error {
@@ -110,20 +111,21 @@ func (gsnet *libp2pGraphSyncNetwork) SendMessage(
 	return s.Close()
 }
 
-func (gsnet *libp2pGraphSyncNetwork) SetDelegate(r Receiver) {
+func (gsnet *tmGraphSyncNetwork) SetDelegate(r Receiver) {
 	gsnet.receiver = r
 	gsnet.host.SetStreamHandler(ProtocolGraphsync, gsnet.handleNewStream)
-	gsnet.host.Network().Notify((*libp2pGraphSyncNotifee)(gsnet))
+	gsnet.host.Network().Notify((*tmGraphSyncNotifee)(gsnet))
 }
 
-func (gsnet *libp2pGraphSyncNetwork) ConnectTo(ctx context.Context, p peer.ID) error {
+func (gsnet *tmGraphSyncNetwork) ConnectTo(ctx context.Context, p peer.ID) error {
 	return gsnet.host.Connect(ctx, peer.AddrInfo{ID: p})
 }
 
 // handleNewStream receives a new stream from the network.
-func (gsnet *libp2pGraphSyncNetwork) handleNewStream(s network.Stream) {
-	defer s.Close()
-
+func (gsnet *tmGraphSyncNetwork) handleNewStream(s *rpc.Client) {
+	///	defer s.Close()
+	r, _ := s.SubscribeWS(context.Background(), "topic")
+	proxy.RPCRoutes(s)
 	if gsnet.receiver == nil {
 		_ = s.Reset()
 		return
@@ -149,25 +151,25 @@ func (gsnet *libp2pGraphSyncNetwork) handleNewStream(s network.Stream) {
 	}
 }
 
-func (gsnet *libp2pGraphSyncNetwork) ConnectionManager() ConnManager {
+func (gsnet *tmGraphSyncNetwork) ConnectionManager() ConnManager {
 	return gsnet.host.ConnManager()
 }
 
-type libp2pGraphSyncNotifee libp2pGraphSyncNetwork
+type tmGraphSyncNotifee tmGraphSyncNetwork
 
-func (nn *libp2pGraphSyncNotifee) libp2pGraphSyncNetwork() *libp2pGraphSyncNetwork {
-	return (*libp2pGraphSyncNetwork)(nn)
+func (nn *tmGraphSyncNotifee) tmGraphSyncNetwork() *tmGraphSyncNetwork {
+	return (*tmGraphSyncNetwork)(nn)
 }
 
-func (nn *libp2pGraphSyncNotifee) Connected(n network.Network, v network.Conn) {
-	nn.libp2pGraphSyncNetwork().receiver.Connected(v.RemotePeer())
+func (nn *tmGraphSyncNotifee) Connected(n network.Network, v network.Conn) {
+	nn.tmGraphSyncNetwork().receiver.Connected(v.RemotePeer())
 }
 
-func (nn *libp2pGraphSyncNotifee) Disconnected(n network.Network, v network.Conn) {
-	nn.libp2pGraphSyncNetwork().receiver.Disconnected(v.RemotePeer())
+func (nn *tmGraphSyncNotifee) Disconnected(n network.Network, v network.Conn) {
+	nn.tmGraphSyncNetwork().receiver.Disconnected(v.RemotePeer())
 }
 
-func (nn *libp2pGraphSyncNotifee) OpenedStream(n network.Network, v network.Stream) {}
-func (nn *libp2pGraphSyncNotifee) ClosedStream(n network.Network, v network.Stream) {}
-func (nn *libp2pGraphSyncNotifee) Listen(n network.Network, a ma.Multiaddr)         {}
-func (nn *libp2pGraphSyncNotifee) ListenClose(n network.Network, a ma.Multiaddr)    {}
+func (nn *tmGraphSyncNotifee) OpenedStream(n network.Network, v *rpc.Client) {}
+func (nn *tmGraphSyncNotifee) ClosedStream(n network.Network, v *rpc.Client) {}
+func (nn *tmGraphSyncNotifee) Listen(n network.Network, a ma.Multiaddr)      {}
+func (nn *tmGraphSyncNotifee) ListenClose(n network.Network, a ma.Multiaddr) {}
