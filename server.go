@@ -74,5 +74,5 @@ func main() {
 	c := server.DefaultConfig()
 	proxy, err := proxy.NewProxy(node, "http://localhost:8899", "http://localhost:26657", c, log.NewNopLogger())
 	proxy.ListenAndServe()
-	server.NewWebsocketManager().
+
 }

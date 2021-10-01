@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"time"
 
 	"github.com/apex/log"
@@ -14,6 +16,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/tendermint/tendermint/light/proxy"
 	"github.com/tendermint/tendermint/light/rpc"
+	"github.com/tendermint/tendermint/rpc/jsonrpc/server"
 )
 
 var sendMessageTimeout = time.Minute * 10
@@ -173,3 +176,67 @@ func (nn *tmGraphSyncNotifee) OpenedStream(n network.Network, v *rpc.Client) {}
 func (nn *tmGraphSyncNotifee) ClosedStream(n network.Network, v *rpc.Client) {}
 func (nn *tmGraphSyncNotifee) Listen(n network.Network, a ma.Multiaddr)      {}
 func (nn *tmGraphSyncNotifee) ListenClose(n network.Network, a ma.Multiaddr) {}
+
+func asdas() {
+	// "subscribe":       rpcserver.NewWSRPCFunc(c.SubscribeWS, "query"),
+	// 	"unsubscribe":     rpcserver.NewWSRPCFunc(c.UnsubscribeWS, "query"),
+	// 	"unsubscribe_all": rpcserver.NewWSRPCFunc(c.UnsubscribeAllWS, ""),
+
+}
+
+func (p *tmGraphSyncNetwork) listen() (net.Listener, *http.ServeMux, error) {
+	mux := http.NewServeMux()
+
+	//1) Register regular routes.
+	//r := RPCRoutes(p.Client)
+	funcs := map[string]*server.RPCFunc{
+		"subscribe": rpcserver.NewWSRPCFunc(c.SubscribeWS, "query"),
+		"unsubscribe":     rpcserver.NewWSRPCFunc(c.UnsubscribeWS, "query"),
+		"unsubscribe_all": rpcserver.NewWSRPCFunc(c.UnsubscribeAllWS, ""),
+	}
+	server.RegisterRPCFuncs(mux, , p.Logger)
+
+	//2) Allow websocket connections.
+	wmLogger := p.Logger.With("protocol", "websocket")
+	wm := rpcserver.NewWebsocketManager(r,
+		rpcserver.OnDisconnect(func(remoteAddr string) {
+			err := p.Client.UnsubscribeAll(context.Background(), remoteAddr)
+			if err != nil && err != tmpubsub.ErrSubscriptionNotFound {
+				wmLogger.Error("Failed to unsubscribe addr from events", "addr", remoteAddr, "err", err)
+			}
+		}),
+		rpcserver.ReadLimit(p.Config.MaxBodyBytes),
+	)
+	wm.SetLogger(wmLogger)
+	mux.HandleFunc("/graphsync", wm.WebsocketHandler)
+
+	// 3) Start a client.
+	if !p.Client.IsRunning() {
+		if err := p.Client.Start(); err != nil {
+			return nil, mux, fmt.Errorf("can't start client: %w", err)
+		}
+	}
+
+	// 4) Start listening for new connections.
+	listener, err := rpcserver.Listen(p.Addr, p.Config)
+	if err != nil {
+		return nil, mux, err
+	}
+
+	return listener, mux, nil
+}
+
+func (p *tmGraphSyncNetwork) ListenAndServe() error {
+	listener, mux, err := p.listen()
+	if err != nil {
+		return err
+	}
+	p.Listener = listener
+
+	return rpcserver.Serve(
+		listener,
+		mux,
+		p.Logger,
+		p.Config,
+	)
+}
