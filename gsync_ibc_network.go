@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"time"
 
+	n "github.com/Electronic-Signatures-Industries/go-xdv-node/network"
 	"github.com/ipfs/go-graphsync/network"
 	peer "github.com/libp2p/go-libp2p-peer"
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/light/proxy"
 	"github.com/tendermint/tendermint/light/rpc"
+	ctypes "github.com/tendermint/tendermint/rpc/core/types"
 	"github.com/tendermint/tendermint/rpc/jsonrpc/server"
+	rpctypes "github.com/tendermint/tendermint/rpc/jsonrpc/types"
 )
 
 var sendMessageTimeout = time.Minute * 10
@@ -69,7 +72,7 @@ type TmGraphSyncNetwork struct {
 }
 
 func (c *TmGraphSyncNetwork) SubscribeProxy(ctx *rpctypes.Context, query string) (*ctypes.ResultSubscribe, error) {
-	out, err := c.next.Subscribe(context.Background(), ctx.RemoteAddr(), query)
+	out, err := c.Client.tr.next.Subscribe(context.Background(), ctx.RemoteAddr(), query)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +115,7 @@ func (p *TmGraphSyncNetwork) listen() (net.Listener, *http.ServeMux, error) {
 
 	//2) Allow websocket connections.
 	wmLogger := p.Logger.With("protocol", "websocket")
-	wm := server.NewWebsocketManager(r,
+	wm := n.NewWebsocketManager(r,
 		server.OnDisconnect(func(remoteAddr string) {
 			err := p.Client.UnsubscribeAll(context.Background(), remoteAddr)
 			if err != nil && err != tmpubsub.ErrSubscriptionNotFound {
@@ -121,8 +124,8 @@ func (p *TmGraphSyncNetwork) listen() (net.Listener, *http.ServeMux, error) {
 		}),
 		server.ReadLimit(c.MaxBodyBytes),
 	)
-	wm.SetLogger(wmLogger)
-	mux.HandleFunc("/graphsync", wm.WebsocketHandler)
+	// wm.SetLogger(wmLogger)
+	mux.HandleFunc("/graphsync", wm.WebsocketHandler(wm))
 
 	if !p.Client.IsRunning() {
 		if err := p.Client.Start(); err != nil {

@@ -1,4 +1,4 @@
-module go-xdv-node
+module github.com/Electronic-Signatures-Industries/go-xdv-node
 
 go 1.16
 
