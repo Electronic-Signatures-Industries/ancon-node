@@ -3,17 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
+
 	"net"
 	"net/http"
 	"time"
 
-	"github.com/apex/log"
-	gsmsg "github.com/ipfs/go-graphsync/message"
 	"github.com/ipfs/go-graphsync/network"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-msgio"
-	ma "github.com/multiformats/go-multiaddr"
+	peer "github.com/libp2p/go-libp2p-peer"
+	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/light/proxy"
 	"github.com/tendermint/tendermint/light/rpc"
 	"github.com/tendermint/tendermint/rpc/jsonrpc/server"
@@ -21,196 +18,112 @@ import (
 
 var sendMessageTimeout = time.Minute * 10
 
-// NewFromTM returns a GraphSyncNetwork supported by underlying Libp2p host.
-func NewFromTM(host proxy.Proxy) network.GraphSyncNetwork {
-	graphSyncNetwork := tmGraphSyncNetwork{
-		host: host,
-	}
+type Receiver interface {
+	ReceiveMessage(
+		ctx context.Context,
+		sender peer.ID,
+		incoming gsmsg.GraphSyncMessage)
 
-	return &graphSyncNetwork
+	ReceiveError(p peer.ID, err error)
+
+	Connected(p peer.ID)
+	Disconnected(p peer.ID)
+}
+
+type RPCReceiver struct{}
+
+func (r *RPCReceiver) ReceiveMessage(
+	ctx context.Context,
+	sender peer.ID,
+	incoming gsmsg.GraphSyncMessage) {
+
+}
+
+func (r *RPCReceiver) ReceiveError(p peer.ID, err error) {}
+
+func (r *RPCReceiver) Connected(p peer.ID) {}
+
+func (r *RPCReceiver) Disconnected(p peer.ID) {}
+
+// NewFromTM returns a GraphSyncNetwork supported by underlying Libp2p host.
+func NewFromTM(
+	host proxy.Proxy,
+	r network.Receiver,
+	logger log.Logger,
+	client *rpc.Client,
+	address string) *TmGraphSyncNetwork {
+
+	return &TmGraphSyncNetwork{host, r, logger, client, address}
 }
 
 // tmGraphSyncNetwork transforms the libp2p host interface, which sends and receives
 // NetMessage objects, into the network.GraphSyncNetwork interface.
-type tmGraphSyncNetwork struct {
+type TmGraphSyncNetwork struct {
 	host proxy.Proxy
 	// inbound messages from the network are forwarded to the receiver
 	receiver network.Receiver
+	log.Logger
+	Client *rpc.Client
+	Addr   string
+	Conn   server.WebsocketManager
 }
 
-type streamMessageSender struct {
-	s *rpc.Client
-}
-
-func (s *streamMessageSender) Close() error {
-	return s.s.Stop()
-
-}
-
-func (s *streamMessageSender) Reset() error {
-	return s.s.Reset()
-}
-
-func (s *streamMessageSender) SendMsg(ctx context.Context, msg gsmsg.GraphSyncMessage) error {
-	return msgToStream(ctx, s.s, msg)
-}
-
-func msgToStream(ctx context.Context, s *rpc.Client, msg gsmsg.GraphSyncMessage) error {
-	log.Debugf("Outgoing message with %d requests, %d responses, and %d blocks",
-		len(msg.Requests()), len(msg.Responses()), len(msg.Blocks()))
-
-	deadline := time.Now().Add(sendMessageTimeout)
-	if dl, ok := ctx.Deadline(); ok {
-		deadline = dl
-	}
-	if err := s.SetWriteDeadline(deadline); err != nil {
-		log.Warnf("error setting deadline: %s", err)
-	}
-
-	switch s.Protocol() {
-	case network.ProtocolGraphsync:
-		if err := msg.ToNet(s); err != nil {
-			log.Debugf("error: %s", err)
-			return err
-		}
-	default:
-		return fmt.Errorf("unrecognized protocol on remote: %s", s.Protocol())
-	}
-
-	if err := s.SetWriteDeadline(time.Time{}); err != nil {
-		log.Warnf("error resetting deadline: %s", err)
-	}
-	return nil
-}
-
-func (gsnet *tmGraphSyncNetwork) NewMessageSender(ctx context.Context, p peer.ID) (network.MessageSender, error) {
-	s, err := gsnet.newStreamToPeer(ctx, p)
+func (c *TmGraphSyncNetwork) SubscribeProxy(ctx *rpctypes.Context, query string) (*ctypes.ResultSubscribe, error) {
+	out, err := c.next.Subscribe(context.Background(), ctx.RemoteAddr(), query)
 	if err != nil {
 		return nil, err
 	}
 
-	return &streamMessageSender{s: s}, nil
-}
-
-func (gsnet *tmGraphSyncNetwork) newStreamToPeer(ctx context.Context, p peer.ID) (*rpc.Client, error) {
-	return gsnet.host.NewStream(ctx, p, ProtocolGraphsync)
-}
-
-func (gsnet *tmGraphSyncNetwork) SendMessage(
-	ctx context.Context,
-	p peer.ID,
-	outgoing gsmsg.GraphSyncMessage) error {
-
-	s, err := gsnet.newStreamToPeer(ctx, p)
-	if err != nil {
-		return err
-	}
-
-	if err = msgToStream(ctx, s, outgoing); err != nil {
-		_ = s.Reset()
-		return err
-	}
-
-	return s.Close()
-}
-
-func (gsnet *tmGraphSyncNetwork) SetDelegate(r Receiver) {
-	gsnet.receiver = r
-	gsnet.host.SetStreamHandler(ProtocolGraphsync, gsnet.handleNewStream)
-	gsnet.host.Network().Notify((*tmGraphSyncNotifee)(gsnet))
-}
-
-func (gsnet *tmGraphSyncNetwork) ConnectTo(ctx context.Context, p peer.ID) error {
-	return gsnet.host.Connect(ctx, peer.AddrInfo{ID: p})
-}
-
-// handleNewStream receives a new stream from the network.
-func (gsnet *tmGraphSyncNetwork) handleNewStream(s *rpc.Client) {
-	///	defer s.Close()
-	r, _ := s.SubscribeWS(context.Background(), "topic")
-	proxy.RPCRoutes(s)
-	if gsnet.receiver == nil {
-		_ = s.Reset()
-		return
-	}
-
-	reader := msgio.NewVarintReaderSize(s, network.MessageSizeMax)
-	for {
-		received, err := gsmsg.FromMsgReader(reader)
-		p := s.Conn().RemotePeer()
-
-		if err != nil {
-			if err != io.EOF {
-				_ = s.Reset()
-				go gsnet.receiver.ReceiveError(p, err)
-				log.Debugf("graphsync net handleNewStream from %s error: %s", s.Conn().RemotePeer(), err)
+	go func() {
+		for {
+			select {
+			case resultEvent := <-out:
+				// We should have a switch here that performs a validation
+				// depending on the event's type.
+				ctx.WSConn.TryWriteRPCResponse(
+					rpctypes.NewRPCSuccessResponse(
+						rpctypes.JSONRPCStringID(fmt.Sprintf("%v#event", ctx.JSONReq.ID)),
+						resultEvent,
+					))
+			case <-c.Quit():
+				return
 			}
-			return
 		}
+	}()
 
-		ctx := context.Background()
-		log.Debugf("graphsync net handleNewStream from %s", s.Conn().RemotePeer())
-		gsnet.receiver.ReceiveMessage(ctx, p, received)
-	}
+	return &ctypes.ResultSubscribe{}, nil
 }
 
-func (gsnet *tmGraphSyncNetwork) ConnectionManager() ConnManager {
-	return gsnet.host.ConnManager()
-}
-
-type tmGraphSyncNotifee tmGraphSyncNetwork
-
-func (nn *tmGraphSyncNotifee) tmGraphSyncNetwork() *tmGraphSyncNetwork {
-	return (*tmGraphSyncNetwork)(nn)
-}
-
-func (nn *tmGraphSyncNotifee) Connected(n network.Network, v network.Conn) {
-	nn.tmGraphSyncNetwork().receiver.Connected(v.RemotePeer())
-}
-
-func (nn *tmGraphSyncNotifee) Disconnected(n network.Network, v network.Conn) {
-	nn.tmGraphSyncNetwork().receiver.Disconnected(v.RemotePeer())
-}
-
-func (nn *tmGraphSyncNotifee) OpenedStream(n network.Network, v *rpc.Client) {}
-func (nn *tmGraphSyncNotifee) ClosedStream(n network.Network, v *rpc.Client) {}
-func (nn *tmGraphSyncNotifee) Listen(n network.Network, a ma.Multiaddr)      {}
-func (nn *tmGraphSyncNotifee) ListenClose(n network.Network, a ma.Multiaddr) {}
-
-func asdas() {
-	// "subscribe":       rpcserver.NewWSRPCFunc(c.SubscribeWS, "query"),
-	// 	"unsubscribe":     rpcserver.NewWSRPCFunc(c.UnsubscribeWS, "query"),
-	// 	"unsubscribe_all": rpcserver.NewWSRPCFunc(c.UnsubscribeAllWS, ""),
-
-}
-
-func (p *tmGraphSyncNetwork) listen() (net.Listener, *http.ServeMux, error) {
+func (p *TmGraphSyncNetwork) listen() (net.Listener, *http.ServeMux, error) {
 	mux := http.NewServeMux()
+	c := server.DefaultConfig()
+
+	rpcReceiver := RPCReceiver{}
+	p.SetDelegate(rpcReceiver)
 
 	//1) Register regular routes.
 	//r := RPCRoutes(p.Client)
-	funcs := map[string]*server.RPCFunc{
-		"subscribe": rpcserver.NewWSRPCFunc(c.SubscribeWS, "query"),
-		"unsubscribe":     rpcserver.NewWSRPCFunc(c.UnsubscribeWS, "query"),
-		"unsubscribe_all": rpcserver.NewWSRPCFunc(c.UnsubscribeAllWS, ""),
+	r := map[string]*server.RPCFunc{
+		"subscribe":       server.NewWSRPCFunc(p.Client.S, "query"),
+		"unsubscribe":     server.NewWSRPCFunc(c.UnsubscribeWS, "query"),
+		"unsubscribe_all": server.NewWSRPCFunc(c.UnsubscribeAllWS, ""),
 	}
-	server.RegisterRPCFuncs(mux, , p.Logger)
+	server.RegisterRPCFuncs(mux, r, p.Logger)
 
 	//2) Allow websocket connections.
 	wmLogger := p.Logger.With("protocol", "websocket")
-	wm := rpcserver.NewWebsocketManager(r,
-		rpcserver.OnDisconnect(func(remoteAddr string) {
+	wm := server.NewWebsocketManager(r,
+		server.OnDisconnect(func(remoteAddr string) {
 			err := p.Client.UnsubscribeAll(context.Background(), remoteAddr)
 			if err != nil && err != tmpubsub.ErrSubscriptionNotFound {
 				wmLogger.Error("Failed to unsubscribe addr from events", "addr", remoteAddr, "err", err)
 			}
 		}),
-		rpcserver.ReadLimit(p.Config.MaxBodyBytes),
+		server.ReadLimit(c.MaxBodyBytes),
 	)
 	wm.SetLogger(wmLogger)
 	mux.HandleFunc("/graphsync", wm.WebsocketHandler)
 
-	// 3) Start a client.
 	if !p.Client.IsRunning() {
 		if err := p.Client.Start(); err != nil {
 			return nil, mux, fmt.Errorf("can't start client: %w", err)
@@ -218,7 +131,7 @@ func (p *tmGraphSyncNetwork) listen() (net.Listener, *http.ServeMux, error) {
 	}
 
 	// 4) Start listening for new connections.
-	listener, err := rpcserver.Listen(p.Addr, p.Config)
+	listener, err := server.Listen(p.Addr, c)
 	if err != nil {
 		return nil, mux, err
 	}
@@ -226,17 +139,23 @@ func (p *tmGraphSyncNetwork) listen() (net.Listener, *http.ServeMux, error) {
 	return listener, mux, nil
 }
 
-func (p *tmGraphSyncNetwork) ListenAndServe() error {
+func (p *TmGraphSyncNetwork) ListenAndServe() error {
 	listener, mux, err := p.listen()
 	if err != nil {
 		return err
 	}
-	p.Listener = listener
+	//p.Listener = listener
 
-	return rpcserver.Serve(
+	c := server.DefaultConfig()
+
+	return server.Serve(
 		listener,
 		mux,
 		p.Logger,
-		p.Config,
+		c,
 	)
+}
+
+func (p *TmGraphSyncNetwork) SetDelegate(r Receiver) {
+
 }
