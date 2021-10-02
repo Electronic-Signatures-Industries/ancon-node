@@ -7,12 +7,22 @@ import (
 	"os"
 	"time"
 
+	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
+	gsync "github.com/ipfs/go-graphsync"
+	graphsync "github.com/ipfs/go-graphsync/impl"
+	gsnet "github.com/ipfs/go-graphsync/network"
+	"github.com/ipfs/go-graphsync/storeutil"
+	ipfsblockstore "github.com/ipfs/go-ipfs-blockstore"
+	blockstore "github.com/ipld/go-car/v2/blockstore"
+	"github.com/ipld/go-ipld-prime/datamodel"
+	"github.com/ipld/go-ipld-prime/node/basicnode"
+	"github.com/ipld/go-ipld-prime/traversal/selector/builder"
 	"github.com/tendermint/tendermint/libs/log"
 	httpprovider "github.com/tendermint/tendermint/light/provider/http"
 	dbm "github.com/tendermint/tm-db"
 	badger "github.com/tendermint/tm-db/badgerdb"
 
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"github.com/tendermint/tendermint/light/provider"
 	dbs "github.com/tendermint/tendermint/light/store/db"
 
@@ -20,9 +30,6 @@ import (
 	"github.com/tendermint/tendermint/light/proxy"
 	"github.com/tendermint/tendermint/rpc/jsonrpc/server"
 
-	graphsync "github.com/ipfs/go-graphsync/impl"
-	gsnet "github.com/ipfs/go-graphsync/network"
-	"github.com/ipfs/go-graphsync/storeutil"
 	"github.com/libp2p/go-libp2p"
 	connmgr "github.com/libp2p/go-libp2p-connmgr"
 	crypto "github.com/libp2p/go-libp2p-core/crypto"
@@ -74,8 +81,8 @@ func run() {
 		libp2p.Security(noise.ID, noise.New),
 		// Multiple listen addresses
 		libp2p.ListenAddrStrings(
-			"/ip4/0.0.0.0/tcp/9000",      // regular tcp connections
-			"/ip4/0.0.0.0/udp/9000/quic", // a UDP endpoint for the QUIC transport
+			"/ip4/0.0.0.0/tcp/9500",      // regular tcp connections
+			"/ip4/0.0.0.0/udp/9500/quic", // a UDP endpoint for the QUIC transport
 		),
 		// support TLS connections
 		// Let's prevent our peer from having too many
@@ -122,12 +129,21 @@ func run() {
 	*/
 	fmt.Printf("Hello World, my hosts ID is %s\n", gsynchost.ID())
 
-	var bs blockstore.Blockstore
+	var bs ipfsblockstore.Blockstore
 
 	network := gsnet.NewFromLibp2pHost(gsynchost)
 	lsys := storeutil.LinkSystemForBlockstore(bs)
-	// add carv1
-	_ = graphsync.New(ctx, network, lsys)
+
+	root, block, selector, _ := ReadCAR()
+	//add carv1
+	var exchange gsync.GraphExchange
+	exchange = graphsync.New(ctx, network, lsys)
+
+	//var responseProgress <-chan gsync.ResponseProgress
+	//var errors <-chan error
+	//link := datamodel.Link{Link: ipld.LinkPrototype}
+
+	//responseProgress, errors = exchange.Request(ctx, "", link, selector, block)
 
 	db, err := badger.NewDB("anconnode", "/tmp/badger")
 	if err != nil {
@@ -148,7 +164,7 @@ func run() {
 
 	// rpc
 	c := server.DefaultConfig()
-	proxy, err := proxy.NewProxy(node, "tcp://localhost:8899", "http://localhost:26657", c, log.NewNopLogger())
+	proxy, err := proxy.NewProxy(node, "tcp://localhost:8890", "http://localhost:26657", c, log.NewNopLogger())
 	proxyerr := proxy.ListenAndServe()
 
 	println(proxyerr.Error())
@@ -177,4 +193,32 @@ func newLightTendermint(ctx context.Context, chainID string,
 	//_, err := c.Update(ctx, time.Now())
 
 	return c, nil
+}
+
+//WriteCAR
+func ReadCAR() ([]cid.Cid, blocks.Block, datamodel.Node, error) {
+	//lsys := linkstore.NewStorageLinkSystemWithNewStorage(cidlink.DefaultLinkSystem())
+	ssb := builder.NewSelectorSpecBuilder(basicnode.Prototype.Any)
+	selector := ssb.ExploreAll(ssb.Matcher()).Node()
+
+	// car := carv1.NewSelectiveCar(context.Background(),
+	// 	lsys.ReadStore,
+	// 	[]carv1.Dag{{
+	// 		Root:     root,
+	// 		Selector: selector,
+	// 	}})
+	// file, err := os.ReadFile(filename)
+	// if err != nil {
+	// 	return err
+	// }
+
+	robs, _ := blockstore.OpenReadOnly("/home/dallant/Code/ancon-node/dagbridge-block-239-begin.car",
+		blockstore.UseWholeCIDs(true),
+	)
+
+	roots, err := robs.Roots()
+
+	res, _ := robs.Get(roots[0])
+
+	return roots, res, selector, err
 }
