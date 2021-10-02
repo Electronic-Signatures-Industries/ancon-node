@@ -4,25 +4,21 @@ import (
 	"context"
 	"fmt"
 
-	"os"
 	"time"
 
-	"github.com/tendermint/tendermint/libs/log"
-	httpprovider "github.com/tendermint/tendermint/light/provider/http"
-	dbm "github.com/tendermint/tm-db"
-	badger "github.com/tendermint/tm-db/badgerdb"
-
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
-	"github.com/tendermint/tendermint/light/provider"
-	dbs "github.com/tendermint/tendermint/light/store/db"
-
-	"github.com/tendermint/tendermint/light"
-	"github.com/tendermint/tendermint/light/proxy"
-	"github.com/tendermint/tendermint/rpc/jsonrpc/server"
-
+	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
+	gsync "github.com/ipfs/go-graphsync"
 	graphsync "github.com/ipfs/go-graphsync/impl"
 	gsnet "github.com/ipfs/go-graphsync/network"
 	"github.com/ipfs/go-graphsync/storeutil"
+	ipfsblockstore "github.com/ipfs/go-ipfs-blockstore"
+	blockstore "github.com/ipld/go-car/v2/blockstore"
+	"github.com/ipld/go-ipld-prime/datamodel"
+	"github.com/ipld/go-ipld-prime/node/basicnode"
+	"github.com/ipld/go-ipld-prime/traversal/selector/builder"
+
+	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
 	"github.com/libp2p/go-libp2p"
 	connmgr "github.com/libp2p/go-libp2p-connmgr"
 	crypto "github.com/libp2p/go-libp2p-core/crypto"
@@ -74,8 +70,8 @@ func run() {
 		libp2p.Security(noise.ID, noise.New),
 		// Multiple listen addresses
 		libp2p.ListenAddrStrings(
-			"/ip4/0.0.0.0/tcp/9000",      // regular tcp connections
-			"/ip4/0.0.0.0/udp/9000/quic", // a UDP endpoint for the QUIC transport
+			"/ip4/0.0.0.0/tcp/9500",      // regular tcp connections
+			"/ip4/0.0.0.0/udp/9500/quic", // a UDP endpoint for the QUIC transport
 		),
 		// support TLS connections
 		// Let's prevent our peer from having too many
@@ -122,59 +118,47 @@ func run() {
 	*/
 	fmt.Printf("Hello World, my hosts ID is %s\n", gsynchost.ID())
 
-	var bs blockstore.Blockstore
+	var bs ipfsblockstore.Blockstore
 
 	network := gsnet.NewFromLibp2pHost(gsynchost)
 	lsys := storeutil.LinkSystemForBlockstore(bs)
-	// add carv1
-	_ = graphsync.New(ctx, network, lsys)
 
-	db, err := badger.NewDB("anconnode", "/tmp/badger")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open badger db: %v", err)
-		os.Exit(1)
-	}
-	defer db.Close()
+	root, _, selector, _ := ReadCAR()
+	//add carv1
+	var exchange gsync.GraphExchange
+	exchange = graphsync.New(ctx, network, lsys)
 
-	height := 1
-	hash := []byte("3289FA79E1D2B3DD2D66878A9FB7183D3DAFD224F815D4A86D5FD5FAE84F003C")
-	//8:15PM INF committed state app_hash=3289FA79E1D2B3DD2D66878A9FB7183D3DAFD224F815D4A86D5FD5FAE84F003C height=1 module=state num_txs=0 server=node
-
-	node, err := newLightTendermint(ctx, "anconprotocol_9000-1", "http://localhost:26657", "http://localhost:26657", height, hash, dbm.DB(db))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v", err)
-		os.Exit(2)
-	}
-
-	// rpc
-	c := server.DefaultConfig()
-	proxy, err := proxy.NewProxy(node, "tcp://localhost:8899", "http://localhost:26657", c, log.NewNopLogger())
-	proxyerr := proxy.ListenAndServe()
-
-	println(proxyerr.Error())
+	link := cidlink.Link{Cid: root[0]}
+	exchange.Request(ctx, "", link, selector)
 
 	// TODO: json-rpc https://github.com/mrFokin/jrpc/blob/master/jrpc_test.go
 
 }
 
-func newLightTendermint(ctx context.Context, chainID string,
-	primary string, witness string, height int, hash []byte, db dbm.DB) (*light.Client, error) {
+//WriteCAR
+func ReadCAR() ([]cid.Cid, blocks.Block, datamodel.Node, error) {
+	//lsys := linkstore.NewStorageLinkSystemWithNewStorage(cidlink.DefaultLinkSystem())
+	ssb := builder.NewSelectorSpecBuilder(basicnode.Prototype.Any)
+	selector := ssb.ExploreAll(ssb.Matcher()).Node()
 
-	primaryNode, _ := httpprovider.New(chainID, primary)
-	witnessNode, _ := httpprovider.New(chainID, witness)
-	c, _ := light.NewClient(
-		ctx,
-		chainID,
-		light.TrustOptions{
-			Period: 504 * time.Hour, // 21 days
-			Height: int64(height),
-			Hash:   hash,
-		},
-		primaryNode,
-		[]provider.Provider{witnessNode},
-		dbs.New(db, "ancon-node"),
+	// car := carv1.NewSelectiveCar(context.Background(),
+	// 	lsys.ReadStore,
+	// 	[]carv1.Dag{{
+	// 		Root:     root,
+	// 		Selector: selector,
+	// 	}})
+	// file, err := os.ReadFile(filename)
+	// if err != nil {
+	// 	return err
+	// }
+
+	robs, _ := blockstore.OpenReadOnly("/home/dallant/Code/ancon-node/dagbridge-block-239-begin.car",
+		blockstore.UseWholeCIDs(true),
 	)
-	//_, err := c.Update(ctx, time.Now())
 
-	return c, nil
+	roots, err := robs.Roots()
+
+	res, _ := robs.Get(roots[0])
+
+	return roots, res, selector, err
 }
