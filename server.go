@@ -40,23 +40,10 @@ func main() {
 	h2 := newPeer(ctx, "/ip4/0.0.0.0/tcp/7777")
 
 	run(ctx, h1,
-
 		fmt.Sprintf("%s/p2p/%s", h2.Addrs()[0].String(), h2.ID().Pretty()))
 	//  	run(ctx, h2, h1.Addrs()[0].String())
-	run(ctx, h2,
-
-		fmt.Sprintf("%s/p2p/%s", h1.Addrs()[0].String(), h1.ID().Pretty()))
-	//  	run(ctx, h2, h1.Addrs()[0].String())
-	/*
-
-
-		// TODO: json-rpc https://github.com/mrFokin/jrpc/blob/master/jrpc_test.go
-		e := echo.New()
-		e.GET("/", func(c echo.Context) error {
-			return c.String(http.StatusOK, "Hello, World!")
-		})
-		e.Logger.Fatal(e.Start(":1323"))*/
-
+	// run(ctx, h2,
+	// 	fmt.Sprintf("%s/p2p/%s", h1.Addrs()[0].String(), h1.ID().Pretty()))
 }
 
 func newPeer(ctx context.Context, addr string) host.Host {
@@ -161,8 +148,8 @@ func run(ctx context.Context, gsynchost host.Host, bootstrap string) string {
 	if err != nil {
 		panic(err)
 	}
-	pgChan, _ := exchange.Request(ctx, pi.ID, link, selector)
-	//	VerifyHasErrors(ctx, errChan)
+	pgChan, errChan := exchange.Request(ctx, pi.ID, link, selector)
+	VerifyHasErrors(ctx, errChan)
 	PrintProgress(ctx, pgChan)
 
 	// var received gsmsg.GraphSyncMessage
